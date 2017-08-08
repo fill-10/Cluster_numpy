@@ -107,24 +107,61 @@ class snapshot(object):
         return self.sel
 
     def stats(self):
-        (clustersizelist, bins)= np.histogram(   self.sel[:,9],   bins= np.arange(0, max(self.sel[:,9]) + 2 )   )
-        # The tricy histogram function, the last bin includes the upper boundary.
+        (self.clustersizelist, bins)= np.histogram(   self.sel[:,9],   bins= np.arange(0, max(self.sel[:,9]) + 2 )   )
+        # The tricky histogram function, the last bin includes the upper boundary.
         # Can also use bincount instead. But the dtype is object, need to convert astype(int)
         # clusterid =0 indicates the beads not in cluster, i.e. cluster size of 1
-        cluster_size_distro =  np.bincount(clustersizelist[1:])[1:] # size of cid=0 makes no sense, skip it. also skip the empty clusterid(s).
-        #TODO: HERE IS A BUG. If no cluster formed, clustersize list will be one-element array, e.g. [96]. Then the line above will yield an empty array for the cluster_size_distro, i.e. np.array([]). The next step will cause error because index will be out of range. However, the qchem2 gives back an uninterpretable result for h4/75p. On local desktop, this triggers an error. Need to fix this.
-        cluster_size_distro[0] = clustersizelist[0]
-        # clusterid 0 indicates the beads in single. add this number to size of 1 "cluser".
-        self.clst_distro = np.vstack(  (np.arange(1, len(cluster_size_distro)+1) , cluster_size_distro)   )
+        if len(self.clustersizelist) > 1:
+            cluster_size_distro =  np.bincount(self.clustersizelist[1:])[1:] # size of cid=0 makes no sense, skip it. also skip the empty clusterid(s).
+            #NOTE: HERE was A BUG. If no cluster formed, clustersize list will be one-element array, e.g. [96]. Then the line above will yield an empty array for the cluster_size_distro, i.e. np.array([]). The next step will cause error because index will be out of range. However, the qchem2 gives back an uninterpretable result for h4/75p. On local desktop, this triggers an error. Need to fix this.
+            #NOTE: The if statement has patched the problem.
+            # It is an ungly patch...
+            cluster_size_distro[0] = self.clustersizelist[0]
+            # clusterid 0 indicates the beads in single. add this number to size of 1 "cluster".
+            self.clst_distro = np.vstack(  (np.arange(1, len(cluster_size_distro)+1) , cluster_size_distro)   )
+        else:
+            # only scattered but no cluster.
+            self.clst_distro = np.array([[1], [self.Nsel]])
         return self.clst_distro
 
-    def updateAtomAll(self):
-        self.sel[:,1] = self.sel[:,9] + max(self.AtomAll[:,1])+100000
-        self.sel = self.sel[:,:9]
-        self.unsel = self.AtomAll[self.AtomAll[:,2]!=self.selatomtype,:]
-        self.AtomAll = np.vstack(   (self.unsel, self.sel)   )
-        return self.AtomAll
+    def saveclusersizelist(self):
+        # run only after self.stats()
+        if len(self.clustersizelist) >1:
+            cidsize = np.vstack(  ( np.arange(1, len(self.clustersizelist) ),  self.clustersizelist[1:]  )  )
+        else:
+            cidsize = np.array([[0],[self.Nsel]])
+        f = open(str(self.ts)+'_idstats.csv', 'w')
+        np.savetxt(f, np.array(['clusterid, number of ']), fmt = '%s')
+        f = open(str(self.ts)+'_idstats.csv', 'a')
+        np.savetxt(f, cidsize.T, fmt='%d', delimiter = ',')
+        f.close()
+
+    def savestats(self):
+        np.savetxt(str(ss1.ts)+'stats.csv',self.clst_distro.T, fmt = '%6d', delimiter = ',')
+
+
+    def savesel(self):
+        # interestingly, I would like to change the molid even if no cluster was found.
+        sel_output = self.sel[:,:9]
+        sel_output[:, 1] = self.sel[:,9]
+        # write head:
+        f = open(str(self.ts)+'_selected.lammpstrj', 'w')
+        np.savetxt(    f, np.array(  [  ['ITEM: TIMESTEP'], [str(self.ts)], ['ITEM: NUMBER OF ATOMS'], [str(self.Nsel)],['ITEM: BOX BOUNDS pp pp pp']   ]   ) , fmt= '%s'   )
+        f = open(str(self.ts)+'_selected.lammpstrj', 'a')
+        np.savetxt(  f, np.vstack(  (self.boxlo, self.boxhi)  ).T , fmt = '%.2f' )
+        np.savetxt(  f, np.array(  ['ITEM: ATOMS id mol type x y z ix iy iz']  ) , fmt = '%s' )
+        # write atoms
+        np.savetxt(  f, sel_output, fmt = '%8s', delimiter = '  ')
+
+        f.close()
+
     def saveAtomAll(self):
+        # if found cluster,update the molid in self.AtomAll, else do nothing but write the original data.
+        if len(self.clustersizelist) >1:
+            seloutput = self.sel[:,:9]
+            seloutput[:, 1] = self.sel[:,9] +max(self.AtomAll[:,1] ) +100000
+            unsel = self.AtomAll[self.AtomAll[:,2]!=self.selatomtype,:]
+            self.AtomAll = np.vstack(   (unsel, seloutput)   )
         # write head:
         f = open(str(self.ts)+'_updated.lammpstrj', 'w')
         np.savetxt(    f, np.array(  [  ['ITEM: TIMESTEP'], [str(self.ts)], ['ITEM: NUMBER OF ATOMS'], [str(self.Natom)],['ITEM: BOX BOUNDS pp pp pp']   ]   ) , fmt= '%s'   )
@@ -154,9 +191,10 @@ if __name__ == '__main__':
     ss1.selectatoms('7')
     print 'total selected:'
     print len(ss1.sel)
-    result = ss1.findcluster(1.)
+    ss1.findcluster(1.)
     #np.savetxt(str(ss1.ts)+'snap_out.csv', result, fmt = '%8s', delimiter='\t', header='ITEM: ATOMS id mol type x y z ix iy iz cluster')
-    np.savetxt(str(ss1.ts)+'stats.csv',ss1.stats().T, fmt = '%6d')
-    ss1.updateAtomAll()
+    np.savetxt(str(ss1.ts)+'stats.csv',ss1.stats().T, fmt = '%6d', delimiter = ',')
+    ss1.savesel()
+    ss1.saveclusersizelist()
     ss1.saveAtomAll()
 
